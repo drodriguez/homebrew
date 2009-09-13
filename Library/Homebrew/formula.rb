@@ -204,6 +204,11 @@ protected
     raise BuildError.new(cmd, args)
   end
 
+  # Like system, but using sudo (for things that need admin priviledges)
+  def sudo(cmd, *args)
+    system 'sudo', cmd, *args
+  end
+
 private
   # creates a temporary directory then yields, when the block returns it
   # recursively deletes the temporary directory
@@ -341,5 +346,98 @@ class GithubGistFormula <ScriptFileFormula
   def initialize name='__UNKNOWN__'
     super name
     @version=File.basename(File.dirname(url))[0,6]
+  end
+end
+
+module UserManagement
+  def addgroup(name, opts={})
+    opts = {:gid => next_gid,
+      :realname => name,
+      :password => '*',
+      :users => []}.merge(opts)
+    opts[:users] = opts[:users].to_a.join(' ')
+    
+    if group_name_exist?(name) || group_id_exist?(opts[:gid])
+      return # Group already exist
+    end
+    
+    sudo "dscl", '.', "-create /Groups/#{name} Password #{opts[:passwd]}"
+    sudo "dscl", '.', "-create /Groups/#{name} RealName #{opts[:realname]}"
+    sudo "dscl", '.', "-create /Groups/#{name} PrimaryGroupID #{opts[:gid]}"
+    unless opts[:users].empty?
+      system "dscl", '.', "-create /Groups/#{name} GroupMembership #{opts[:users]}"
+    end
+  end
+
+  def group_id(name)
+    begin
+      gid = Etc.getgrnam(name).gid
+      # nogroup is -1 in the /etc/groups, but Ruby returns 4294967295 as
+      # its gid (both -1 and 4294967295 are 0xFFFFFFFF in binary)
+      gid > 1<<31 ? gid - (1<<32) : gid
+    rescue ArgumentError => e
+      0
+    end
+  end
+
+  def adduser(name, opts={})
+    opts = {:password => '*',
+      :uid => next_uid,
+      :gid => group_id('nogroup'),
+      :realname => name,
+      :home => '/dev/null',
+      :shell => '/dev/null'}.merge(opts)
+    
+    if user_name_exist?(name) || user_id_exist?(opts[:uid])
+      return # User already exists
+    end
+    
+    sudo "dscl", '.', "-create /Users/#{name} Password #{opts[:passwd]}"
+    sudo "dscl", '.', "-create /Users/#{name} UniqueID #{opts[:uid]}"
+    sudo "dscl", '.', "-create /Users/#{name} PrimaryGroupID #{opts[:gid]}"
+    sudo "dscl", '.', "-create /Users/#{name} RealName #{opts[:realname]}"
+    sudo "dscl", '.', "-create /Users/#{name} NFSHomeDirectory #{opts[:home]}"
+    sudo "dscl", '.', "-create /Users/#{name} UserShell #{opts[:shell]}"
+  end
+
+private
+  def group_name_exist?(name)
+    Etc.getgrnam(name)
+    true
+  rescue ArgumentError => e
+    false
+  end
+
+  def group_id_exist?(gid)
+    Etc.getgrgid(gid)
+    true
+  rescue ArgumentError => e
+    false
+  end
+
+  def user_name_exist?(name)
+    Etc.getpwnam(name)
+    true
+  rescue ArgumentError => e
+    false
+  end
+
+  def user_id_exist?(uid)
+    Etc.getpwuid(uid)
+    true
+  rescue ArgumentError => e
+    false
+  end
+
+  def next_uid
+    uid = 500
+    uid += 1 while user_id_exist?(uid)
+    uid
+  end
+
+  def next_gid
+    gid = 500
+    gid += 1 while group_id_exist?(gid)
+    gid
   end
 end
